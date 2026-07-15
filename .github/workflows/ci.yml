@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore KnowledgeLauncher.slnx
+      - name: Build
+        run: dotnet build KnowledgeLauncher.slnx --configuration Release --no-restore
+      - name: Test
+        run: dotnet test KnowledgeLauncher.slnx --configuration Release --no-build
+      - name: Publish Windows x64
+        run: dotnet publish src/KnowledgeLauncher.App/KnowledgeLauncher.App.csproj --configuration Release --no-build --output artifacts/win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KnowledgeLauncher-win-x64
+          path: artifacts/win-x64/

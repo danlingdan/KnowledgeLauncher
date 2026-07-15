@@ -1,0 +1,85 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 0.3.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            "${{ inputs.version }}"
+          } else {
+            "${{ github.ref_name }}" -replace '^v', ''
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Version must use the format major.minor.patch."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Restore
+        run: dotnet restore KnowledgeLauncher.slnx
+
+      - name: Build
+        run: dotnet build KnowledgeLauncher.slnx --configuration Release --no-restore /p:Version=${{ steps.version.outputs.version }}
+
+      - name: Test
+        run: dotnet test KnowledgeLauncher.slnx --configuration Release --no-build /p:Version=${{ steps.version.outputs.version }}
+
+      - name: Publish Windows x64
+        run: >-
+          dotnet publish src/KnowledgeLauncher.App/KnowledgeLauncher.App.csproj
+          --configuration Release
+          --no-build
+          --output artifacts/win-x64
+          /p:Version=${{ steps.version.outputs.version }}
+
+      - name: Package and checksum
+        id: package
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $archive = "KnowledgeLauncher-v$version-win-x64.zip"
+          Compress-Archive -Path artifacts/win-x64/* -DestinationPath "artifacts/$archive"
+          $hash = (Get-FileHash "artifacts/$archive" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content "artifacts/$archive.sha256" -Encoding ascii
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          $archive = "${{ steps.package.outputs.archive }}"
+          if (-not (git tag --list $tag)) {
+            git tag $tag
+            git push origin $tag
+          }
+          gh release create $tag `
+            "artifacts/$archive" `
+            "artifacts/$archive.sha256" `
+            --title "KnowledgeLauncher $tag" `
+            --generate-notes
