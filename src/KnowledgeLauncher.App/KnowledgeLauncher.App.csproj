@@ -20,7 +20,7 @@
     <Product>计算机知识库启动器</Product>
     <Authors>danlingdan</Authors>
     <Version>0.3.0</Version>
-    <FileVersion>0.3.0.0</FileVersion>
+    <FileVersion>$(Version).0</FileVersion>
   </PropertyGroup>
 
 </Project>
