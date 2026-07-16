@@ -64,31 +64,33 @@ public sealed class GitHubReleaseClient : IReleaseClient
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken).ConfigureAwait(false);
             await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            await using var destination = new FileStream(
+            await using (var destination = new FileStream(
                 partialPath,
                 FileMode.Create,
                 FileAccess.Write,
                 FileShare.None,
                 64 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-            var buffer = new byte[64 * 1024];
-            long received = 0;
-            var total = response.Content.Headers.ContentLength ?? (asset.Size > 0 ? asset.Size : null);
-            while (true)
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                if (read == 0)
+                var buffer = new byte[64 * 1024];
+                long received = 0;
+                var total = response.Content.Headers.ContentLength ?? (asset.Size > 0 ? asset.Size : null);
+                while (true)
                 {
-                    break;
+                    var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                    received += read;
+                    progress?.Report(new DownloadProgress(asset.Name, received, total));
                 }
 
-                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                received += read;
-                progress?.Report(new DownloadProgress(asset.Name, received, total));
+                await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
             File.Move(partialPath, destinationPath, overwrite: true);
         }
         catch

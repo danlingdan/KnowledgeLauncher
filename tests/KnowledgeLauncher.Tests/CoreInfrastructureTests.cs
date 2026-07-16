@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Net;
 using KnowledgeLauncher.Core;
 using KnowledgeLauncher.Infrastructure;
 
@@ -105,6 +106,25 @@ public sealed class CoreInfrastructureTests : IDisposable
         Assert.Equal("KL4002", exception.ErrorCode);
     }
 
+    [Fact]
+    public async Task GitHubReleaseClient_DownloadClosesPartialFileBeforeActivatingIt()
+    {
+        Directory.CreateDirectory(_root);
+        var content = "downloaded content";
+        using var httpClient = new HttpClient(new StaticResponseHandler(content));
+        var client = new GitHubReleaseClient(httpClient, new NullLog());
+        var destination = Path.Combine(_root, "asset.bin");
+        var asset = new ReleaseAsset(
+            "asset.bin",
+            new Uri("https://example.invalid/asset.bin"),
+            content.Length);
+
+        await client.DownloadAsync(asset, destination);
+
+        Assert.Equal(content, await File.ReadAllTextAsync(destination));
+        Assert.False(File.Exists(destination + ".partial"));
+    }
+
     [Theory]
     [InlineData("首页.md", "**/*.md", true)]
     [InlineData("课程/第一章.md", "**/*.md", true)]
@@ -157,5 +177,17 @@ public sealed class CoreInfrastructureTests : IDisposable
         public void Write(LogLevel level, string eventId, string message, Exception? exception = null)
         {
         }
+    }
+
+    private sealed class StaticResponseHandler(string content) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(content),
+                RequestMessage = request
+            });
     }
 }
