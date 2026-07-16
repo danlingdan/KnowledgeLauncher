@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.IO.Compression;
 using System.Net;
+using System.Text.Json;
 using KnowledgeLauncher.Core;
 using KnowledgeLauncher.Infrastructure;
 
@@ -35,6 +37,47 @@ public sealed class CoreInfrastructureTests : IDisposable
         Assert.Equal("obsidian", uri.Scheme);
         Assert.StartsWith("obsidian://open?path=", uri.OriginalString, StringComparison.Ordinal);
         Assert.Contains("%E8%AE%A1%E7%AE%97%E6%9C%BA%20%E7%9F%A5%E8%AF%86%E5%BA%93", uri.AbsoluteUri, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ObsidianVaultRegistry_RegistersAndFindsVaultByExactPath()
+    {
+        var vaultPath = Path.Combine(_root, "computer-knowledge-base");
+        var configurationPath = Path.Combine(_root, "obsidian", "obsidian.json");
+        Directory.CreateDirectory(vaultPath);
+        var registry = new ObsidianVaultRegistry(configurationPath);
+
+        var vaultId = registry.EnsureRegistered(vaultPath);
+
+        Assert.Equal(16, vaultId.Length);
+        Assert.Equal(vaultId, registry.FindVaultId(vaultPath));
+        using var configuration = JsonDocument.Parse(File.ReadAllText(configurationPath));
+        Assert.Equal(
+            Path.GetFullPath(vaultPath),
+            configuration.RootElement.GetProperty("vaults").GetProperty(vaultId).GetProperty("path").GetString());
+    }
+
+    [Fact]
+    public void ObsidianVaultRegistry_PreservesExistingConfigurationAndVaultId()
+    {
+        var vaultPath = Path.Combine(_root, "ComputerKnowledgeBase");
+        var configurationPath = Path.Combine(_root, "obsidian.json");
+        Directory.CreateDirectory(vaultPath);
+        File.WriteAllText(configurationPath, JsonSerializer.Serialize(new
+        {
+            vaults = new Dictionary<string, object>
+            {
+                ["existing-vault"] = new { path = vaultPath, ts = 1 }
+            },
+            cli = true
+        }));
+        var registry = new ObsidianVaultRegistry(configurationPath);
+
+        var vaultId = registry.EnsureRegistered(vaultPath.ToUpperInvariant());
+
+        Assert.Equal("existing-vault", vaultId);
+        using var configuration = JsonDocument.Parse(File.ReadAllText(configurationPath));
+        Assert.True(configuration.RootElement.GetProperty("cli").GetBoolean());
     }
 
     [Fact]
@@ -125,6 +168,24 @@ public sealed class CoreInfrastructureTests : IDisposable
         Assert.False(File.Exists(destination + ".partial"));
     }
 
+    [Fact]
+    public async Task GitHubReleaseClient_FallsBackToPublicReleasePageWhenApiIsRateLimited()
+    {
+        var handler = new RateLimitedReleaseHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new GitHubReleaseClient(httpClient, new NullLog());
+
+        var release = await client.GetLatestAsync("fallback-owner", "fallback-repository");
+        var cachedRelease = await client.GetLatestAsync("fallback-owner", "fallback-repository");
+
+        Assert.Equal("vault-v1.2.3", release.TagName);
+        Assert.Same(release, cachedRelease);
+        Assert.Equal(1, handler.ApiRequestCount);
+        Assert.Equal(
+            ["checksums.json", "knowledge-v1.2.3.zip", "manifest.json"],
+            release.Assets.Select(asset => asset.Name).Order().ToArray());
+    }
+
     [Theory]
     [InlineData("首页.md", "**/*.md", true)]
     [InlineData("课程/第一章.md", "**/*.md", true)]
@@ -189,5 +250,53 @@ public sealed class CoreInfrastructureTests : IDisposable
                 Content = new StringContent(content),
                 RequestMessage = request
             });
+    }
+
+    private sealed class RateLimitedReleaseHandler : HttpMessageHandler
+    {
+        public int ApiRequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var uri = request.RequestUri ?? throw new InvalidOperationException("Request URI is required.");
+            if (uri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
+            {
+                ApiRequestCount++;
+                var forbidden = new HttpResponseMessage(HttpStatusCode.Forbidden)
+                {
+                    Content = new StringContent("{\"message\":\"API rate limit exceeded\"}"),
+                    RequestMessage = request
+                };
+                forbidden.Headers.Add("X-RateLimit-Remaining", "0");
+                forbidden.Headers.Add(
+                    "X-RateLimit-Reset",
+                    DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture));
+                return Task.FromResult(forbidden);
+            }
+
+            if (uri.AbsolutePath.EndsWith("/releases/latest", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(string.Empty),
+                    RequestMessage = new HttpRequestMessage(
+                        HttpMethod.Get,
+                        "https://github.com/fallback-owner/fallback-repository/releases/tag/vault-v1.2.3")
+                });
+            }
+
+            const string html = """
+                <a href="/fallback-owner/fallback-repository/releases/download/vault-v1.2.3/manifest.json">manifest</a>
+                <a href="/fallback-owner/fallback-repository/releases/download/vault-v1.2.3/checksums.json">checksums</a>
+                <a href="/fallback-owner/fallback-repository/releases/download/vault-v1.2.3/knowledge-v1.2.3.zip">archive</a>
+                """;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(html),
+                RequestMessage = request
+            });
+        }
     }
 }

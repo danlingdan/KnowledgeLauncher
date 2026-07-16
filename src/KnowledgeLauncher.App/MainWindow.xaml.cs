@@ -14,6 +14,8 @@ public partial class MainWindow : Window, IDisposable
     private readonly AppPaths _paths = new();
     private readonly ObsidianDetector _obsidianDetector = new();
     private readonly ObsidianLauncher _obsidianLauncher = new();
+    private readonly ObsidianVaultRegistry _vaultRegistry = new();
+    private readonly VaultUsageDetector _vaultUsageDetector = new();
     private CancellationTokenSource? _cancellation;
     private LauncherSettings? _settings;
 
@@ -124,9 +126,7 @@ public partial class MainWindow : Window, IDisposable
                 $"{Environment.NewLine}安装完成：{result.Manifest.Name} {result.Manifest.Version}{Environment.NewLine}" +
                 $"插件：{string.Join("、", result.InstalledPluginIds)}{Environment.NewLine}");
             await RefreshStatusAsync();
-            var entryPath = Path.Combine(result.VaultPath, result.Manifest.Entry.Replace('/', Path.DirectorySeparatorChar));
-            MessageBox.Show("即将通过 Obsidian 打开知识库。首次打开时请确认将该目录注册为 Vault。", "首次打开");
-            _obsidianLauncher.OpenPath(entryPath);
+            OpenVault(result.VaultPath, result.Manifest);
         }
         catch (OperationCanceledException)
         {
@@ -167,12 +167,29 @@ public partial class MainWindow : Window, IDisposable
             var manifest = await ManifestLoader.LoadVaultManifestAsync(
                 Path.Combine(vaultPath, "launcher", "manifest.json"),
                 vaultPath);
-            _obsidianLauncher.Open(Path.GetFileName(vaultPath), manifest.Entry);
+            OpenVault(vaultPath, manifest);
         }
         catch (LauncherException exception)
         {
             MessageBox.Show(exception.Message, $"打开失败 [{exception.ErrorCode}]", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void OpenVault(string vaultPath, VaultManifest manifest)
+    {
+        var vaultId = _vaultRegistry.FindVaultId(vaultPath);
+        if (vaultId is null && _vaultUsageDetector.IsObsidianRunning())
+        {
+            MessageBox.Show(
+                "这是首次打开该知识库。请完全退出 Obsidian 后再次点击“打开知识库”，启动器将自动登记并打开它。",
+                "需要退出 Obsidian",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        vaultId ??= _vaultRegistry.EnsureRegistered(vaultPath);
+        _obsidianLauncher.Open(vaultId, manifest.Entry);
     }
 
     private void LogsButton_Click(object sender, RoutedEventArgs e)
